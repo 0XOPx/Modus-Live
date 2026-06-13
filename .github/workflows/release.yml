@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get latest tag
+        id: tag
+        run: |
+          git fetch --tags
+          TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Bump version (patch)
+        id: bump
+        run: |
+          OLD=${{ steps.tag.outputs.tag }}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "${OLD#v}"
+          PATCH=$((PATCH + 1))
+          NEW="v$MAJOR.$MINOR.$PATCH"
+          echo "new=$NEW" >> $GITHUB_OUTPUT
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          git log $(git describe --tags --abbrev=0)..HEAD --pretty=format:"- %s" > changelog.txt
+
+      - name: Create tag
+        run: |
+          git tag ${{ steps.bump.outputs.new }}
+          git push origin ${{ steps.bump.outputs.new }}
+
+      - name: Configure Linux
+        run: cmake -S . -B build-linux -DPROJECT_VERSION=${{ steps.bump.outputs.new }}
+
+      - name: Build Linux
+        run: cmake --build build-linux
+
+      - name: Install MinGW
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+
+      - name: Configure Windows
+        run: |
+          cmake -S . -B build-win \
+          -DCMAKE_SYSTEM_NAME=Windows \
+          -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
+          -DPROJECT_VERSION=${{ steps.bump.outputs.new }}
+
+      - name: Build Windows
+        run: cmake --build build-win
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.bump.outputs.new }}
+          body_path: changelog.txt
+          files: |
+            build-linux/ModusLive
+            build-win/ModusLive.exe
