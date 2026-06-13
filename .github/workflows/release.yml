@@ -1,21 +1,98 @@
-name: Build
+name: Release Pipeline
 
 on:
   push:
-  pull_request:
+    tags:
+      - "v*"
 
 permissions:
   contents: write
 
 jobs:
+
+# ---------------- BUILD ----------------
   build:
     runs-on: ubuntu-latest
 
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Configure
-        run: cmake -S . -B build
+      - name: Get version + hash
+        id: ver
+        run: |
+          echo "version=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+          echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
-      - name: Build
-        run: cmake --build build
+      # ---------------- LINUX ----------------
+      - name: Configure Linux
+        run: |
+          cmake -S . -B build-linux \
+          -DPROJECT_VERSION=${{ steps.ver.outputs.version }} \
+          -DGIT_HASH=${{ steps.ver.outputs.hash }}
+
+      - name: Build Linux
+        run: cmake --build build-linux
+
+      - name: Package Linux
+        run: |
+          mkdir -p dist/linux
+          cp build-linux/ModusLive dist/linux/
+          zip -r ModusLive-linux.zip dist/linux
+
+      # ---------------- WINDOWS ----------------
+      - name: Install MinGW
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+
+      - name: Configure Windows
+        run: |
+          cmake -S . -B build-win \
+          -DCMAKE_SYSTEM_NAME=Windows \
+          -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
+          -DPROJECT_VERSION=${{ steps.ver.outputs.version }} \
+          -DGIT_HASH=${{ steps.ver.outputs.hash }}
+
+      - name: Build Windows
+        run: cmake --build build-win
+
+      - name: Package Windows
+        run: |
+          mkdir -p dist/win
+          cp build-win/ModusLive.exe dist/win/
+          zip -r ModusLive-windows.zip dist/win
+
+      # ---------------- ARTIFACTS ----------------
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: builds
+          path: |
+            ModusLive-linux.zip
+            ModusLive-windows.zip
+
+# ---------------- RELEASE ----------------
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: builds
+
+      - name: Generate changelog
+        run: |
+          git log $(git describe --tags --abbrev=0)..HEAD --pretty=format:"- %s" > changelog.txt || echo "- initial release" > changelog.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          body_path: changelog.txt
+          files: |
+            ModusLive-linux.zip
+            ModusLive-windows.zip
